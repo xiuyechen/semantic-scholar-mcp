@@ -2,11 +2,37 @@
 
 import asyncio
 import os
+import time
 from dataclasses import dataclass
 
 import httpx
 
 BASE_URL = "https://api.semanticscholar.org/graph/v1"
+
+# SS rate limits: 1 req/sec for both anonymous (shared) and authenticated (dedicated).
+# Set the floor slightly above 1.0s to absorb clock skew and avoid edge-case 429s.
+MIN_REQUEST_INTERVAL = 1.05  # seconds
+
+
+class _RateLimiter:
+    """Process-wide async token bucket — one request per MIN_REQUEST_INTERVAL."""
+
+    def __init__(self, interval: float):
+        self.interval = interval
+        self._lock = asyncio.Lock()
+        self._next_allowed = 0.0
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            now = time.monotonic()
+            wait = self._next_allowed - now
+            if wait > 0:
+                await asyncio.sleep(wait)
+                now = time.monotonic()
+            self._next_allowed = now + self.interval
+
+
+_LIMITER = _RateLimiter(MIN_REQUEST_INTERVAL)
 
 # Fields we request by default for paper searches
 PAPER_SEARCH_FIELDS = ",".join([
@@ -53,15 +79,25 @@ class S2Client:
         return headers
 
     async def _get(self, path: str, params: dict | None = None) -> dict:
+        max_attempts = 5
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for attempt in range(3):
+            for attempt in range(max_attempts):
+                await _LIMITER.acquire()
                 resp = await client.get(
                     f"{BASE_URL}{path}",
                     params=params,
                     headers=self._headers(),
                 )
-                if resp.status_code == 429 and attempt < 2:
-                    await asyncio.sleep(1 + attempt)
+                if resp.status_code == 429 and attempt < max_attempts - 1:
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = float(retry_after)
+                        except ValueError:
+                            delay = 2.0 * (2 ** attempt)
+                    else:
+                        delay = 2.0 * (2 ** attempt)  # 2, 4, 8, 16s
+                    await asyncio.sleep(delay)
                     continue
                 resp.raise_for_status()
                 return resp.json()
