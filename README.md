@@ -1,6 +1,6 @@
 # Semantic Scholar MCP Server
 
-An [MCP](https://modelcontextprotocol.io) server that gives Claude access to [Semantic Scholar](https://www.semanticscholar.org/)'s database of 225M+ academic papers. Search papers, explore citation graphs, and look up authors — directly from Claude.
+An [MCP](https://modelcontextprotocol.io) server that gives Claude access to [Semantic Scholar](https://www.semanticscholar.org/)'s database of 200M+ academic papers. Search papers, explore citation graphs, and look up authors — directly from Claude. Wraps the official [`semanticscholar`](https://pypi.org/project/semanticscholar/) SDK with a process-wide rate limiter to prevent 429s under concurrent dispatch.
 
 ## Tools
 
@@ -18,6 +18,19 @@ An [MCP](https://modelcontextprotocol.io) server that gives Claude access to [Se
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
+- A Semantic Scholar API key (see below — strongly recommended)
+
+### Get an API key
+
+Without a key, requests share a global anonymous rate-limit bucket and you will see frequent `429 Too Many Requests` errors during normal use. Request a free key at [semanticscholar.org/product/api](https://www.semanticscholar.org/product/api#api-key) — turnaround is usually a few days.
+
+Once you have a key, set it as an environment variable:
+
+```bash
+export S2_API_KEY=your_key_here
+```
+
+For persistence across shells, add the line to `~/.zshenv` (or your shell's equivalent).
 
 ### Install
 
@@ -33,13 +46,9 @@ Or with pip:
 pip install -e .
 ```
 
-### (Optional) API key
+### Rate limiting and retries
 
-The server works without an API key, but rate limits are shared across all unauthenticated users. For better rate limits, get a free key from [Semantic Scholar API](https://www.semanticscholar.org/product/api) and set it:
-
-```bash
-export S2_API_KEY=your_key_here
-```
+The client wraps the official [`semanticscholar`](https://pypi.org/project/semanticscholar/) Python SDK and adds a process-wide async token bucket on top. Concurrent calls from the same process serialize through a 1.05s floor so the client cannot burst past the API's 1 req/sec limit, even when an LLM dispatches multiple tools in parallel. Transient 429s are retried with `Retry-After`-aware exponential backoff (up to 5 attempts). No tuning required.
 
 ## Configure with Claude
 
@@ -86,8 +95,8 @@ Once configured, you can ask Claude things like:
 
 This server wraps the [Semantic Scholar Academic Graph API](https://api.semanticscholar.org/api-docs/). The API is free to use and covers:
 
-- 225M+ papers from all major publishers
-- 2.8B+ citation edges
+- 200M+ papers from all major publishers
+- 2.4B+ citation edges
 - Author profiles with h-index and affiliation data
 - Open access PDF links where available
 - AI-generated TLDR summaries for many papers
